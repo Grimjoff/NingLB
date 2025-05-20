@@ -77,7 +77,7 @@ class LeaderBoard:
 
                 logging.info(f"Fetching UID {uid}")
                 try:
-                    response = session.get(f"https://enka.network/api/uid/{uid}")
+                    response = session.get(f"https://enka.network/api/uid/{uid}", timeout=5)
                     response.raise_for_status()
                     data = response.json()
                 except requests.exceptions.RequestException as e:
@@ -138,7 +138,6 @@ class LeaderBoard:
                         weapon_cv = stat_value / 100
 
                 weapon_name = self.get_weapon_name(weapon["flat"].get("nameTextMapHash"))
-
                 props = avatar_info["fightPropMap"]
                 crit_rate = props.get("20", 0)
                 crit_dmg = props.get("22", 0)
