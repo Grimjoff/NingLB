@@ -1,5 +1,25 @@
 import sqlite3
 import requests
+import logging
+from datetime import datetime
+from typing import Optional
+
+logging.basicConfig(level=logging.INFO)
+
+NINGGUANG_ID = 10000027
+ARTIFACT_SET_IDS = {
+    147298547: "WT",
+    1751039235: "NO",
+    1438974835: "RB",
+    4144069251: "SR",
+    2276480763: "EoSF"
+}
+
+SKILL_MULT = 4.896
+BURST_MULT = 1.8479
+CA_MULT = 3.1334
+STAR_JADE_MULT = 0.8928
+ENEMY_REDUCTION = 0.5 * 0.9
 
 
 class LeaderBoard:
@@ -25,13 +45,13 @@ class LeaderBoard:
             693354267: "Memory of Dust"
         }
 
-    def get_uid(self, number):
+    def get_uid(self, number: int) -> Optional[str]:
         return self.uids.get(number)
 
-    def get_weapon_name(self, name_hash):
+    def get_weapon_name(self, name_hash: int) -> str:
         return self.weapons.get(name_hash, "Unknown Weapon")
 
-    def create_table(self, cursor):
+    def create_table(self, cursor: sqlite3.Cursor) -> None:
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS NingguangLB (
                 UID TEXT PRIMARY KEY,
@@ -39,44 +59,45 @@ class LeaderBoard:
                 DAMAGE INTEGER,
                 CV TEXT,
                 ATTACK INTEGER,
-                WEAPON TEXT
+                WEAPON TEXT,
+                UPDATED_AT TEXT
             )
         ''')
 
-    def lb(self):
-        conn = sqlite3.connect('NingguangLeaderboard')
-        c = conn.cursor()
-        self.create_table(c)
+    def lb(self) -> None:
+        session = requests.Session()
+        with sqlite3.connect('NingguangLeaderboard') as conn:
+            c = conn.cursor()
+            self.create_table(c)
 
-        for j in range(10):
-            uid = self.get_uid(j)
-            if uid is None:
-                print("done")
-                break
+            for j in range(11):
+                uid = self.get_uid(j)
+                if uid is None:
+                    break
 
-            try:
-                print("getting data")
-                getData = requests.get(f"https://enka.network/api/uid/{uid}")
-                if getData.status_code != 200:
-                    print(f"API returned status {getData.status_code} for UID {uid}")
+                logging.info(f"Fetching UID {uid}")
+                try:
+                    response = session.get(f"https://enka.network/api/uid/{uid}")
+                    response.raise_for_status()
+                    data = response.json()
+                except requests.exceptions.RequestException as e:
+                    logging.warning(f"Network error for UID {uid}: {e}")
                     continue
-                data = getData.json()
-            except Exception as e:
-                print(f"Error fetching data for UID {uid}: {e}")
-                continue
-
-            nickname = data.get("playerInfo", {}).get("nickname", "Unknown")
-            avatar_list = data.get("avatarInfoList", [])
-            show_avatar_list = data.get("playerInfo", {}).get("showAvatarInfoList", [])
-
-            if not avatar_list or not show_avatar_list:
-                continue
-
-            for show_avatar in show_avatar_list:
-                if show_avatar.get("avatarId") != 10000027:  # Ningguang ID
+                except ValueError:
+                    logging.warning(f"Invalid JSON for UID {uid}")
                     continue
 
-                avatar_info = next((a for a in avatar_list if a.get("avatarId") == 10000027), None)
+                nickname = data.get("playerInfo", {}).get("nickname", "Unknown")
+                avatar_list = data.get("avatarInfoList", [])
+                show_avatar_list = data.get("playerInfo", {}).get("showAvatarInfoList", [])
+                if not avatar_list or not show_avatar_list:
+                    continue
+
+                avatars_by_id = {a["avatarId"]: a for a in avatar_list}
+                if NINGGUANG_ID not in [x.get("avatarId") for x in show_avatar_list]:
+                    continue
+
+                avatar_info = avatars_by_id.get(NINGGUANG_ID)
                 if not avatar_info:
                     continue
 
@@ -84,20 +105,12 @@ class LeaderBoard:
                 if len(equips) != 6:
                     continue
 
-                # Artifact set counters
-                set_counts = {
-                    147298547: 0,    # WT
-                    1751039235: 0,   # NO
-                    1438974835: 0,   # RB
-                    4144069251: 0,   # SR
-                    2276480763: 0    # EoSF
-                }
-
+                set_counts = dict.fromkeys(ARTIFACT_SET_IDS.keys(), 0)
                 ca_bonus = 1.0
                 burst_bonus = 1.0
                 weapon_cv = 0.0
 
-                for item in equips[:5]:  # first 5 are artifacts
+                for item in equips[:5]:
                     set_id = item["flat"].get("setNameTextMapHash")
                     if set_id in set_counts:
                         set_counts[set_id] += 1
@@ -137,38 +150,29 @@ class LeaderBoard:
 
                 total_cv = round(100 * (crit_dmg + 2 * crit_rate - weapon_cv - 0.6), 1)
                 dmg_multiplier = (1 + crit_rate * crit_dmg)
-                enemy_reduction = 0.5 * 0.9
 
-                avg_skill_no_buff = total_atk * 4.896 * (1 + geo_bonus) * dmg_multiplier * enemy_reduction
-                geo_bonus += 0.12  # additional geo bonus from talents or resonance
-                avg_skill_buff = total_atk * 4.896 * (1 + geo_bonus) * dmg_multiplier * enemy_reduction
-                avg_burst = 12 * total_atk * 1.8479 * (1 + geo_bonus) * dmg_multiplier * burst_bonus * enemy_reduction
-                avg_ca = total_atk * 3.1334 * (1 + geo_bonus) * dmg_multiplier * ca_bonus * enemy_reduction
-                avg_star_jade = 7 * total_atk * 0.8928 * (1 + geo_bonus) * dmg_multiplier * ca_bonus * enemy_reduction
+                avg_skill_no_buff = total_atk * SKILL_MULT * (1 + geo_bonus) * dmg_multiplier * ENEMY_REDUCTION
+                geo_bonus += 0.12
+                avg_skill_buff = total_atk * SKILL_MULT * (1 + geo_bonus) * dmg_multiplier * ENEMY_REDUCTION
+                avg_burst = 12 * total_atk * BURST_MULT * (1 + geo_bonus) * dmg_multiplier * burst_bonus * ENEMY_REDUCTION
+                avg_ca = total_atk * CA_MULT * (1 + geo_bonus) * dmg_multiplier * ca_bonus * ENEMY_REDUCTION
+                avg_star_jade = 7 * total_atk * STAR_JADE_MULT * (1 + geo_bonus) * dmg_multiplier * ca_bonus * ENEMY_REDUCTION
 
                 total_dmg = int(avg_skill_no_buff + avg_skill_buff + avg_burst + avg_ca + avg_star_jade)
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-                c.execute("SELECT UID FROM NingguangLB WHERE UID = ?", (uid,))
-                exists = c.fetchone()
-
-                if exists:
-                    c.execute('''
-                        UPDATE NingguangLB
-                        SET DAMAGE = ?, CV = ?, ATTACK = ?, WEAPON = ?
-                        WHERE UID = ?
-                    ''', (total_dmg, f"{total_cv}", int(total_atk), weapon_name, uid))
-                else:
-                    c.execute('''
-                        INSERT OR IGNORE INTO NingguangLB (UID, USERNAME, DAMAGE, CV, ATTACK, WEAPON)
-                        VALUES (?, ?, ?, ?, ?, ?)
-                    ''', (uid, nickname, total_dmg, f"{total_cv}", int(total_atk), weapon_name))
-
-                conn.commit()
-
-        conn.close()
+                c.execute('''
+                    INSERT INTO NingguangLB (UID, USERNAME, DAMAGE, CV, ATTACK, WEAPON, UPDATED_AT)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(UID) DO UPDATE SET
+                        DAMAGE=excluded.DAMAGE,
+                        CV=excluded.CV,
+                        ATTACK=excluded.ATTACK,
+                        WEAPON=excluded.WEAPON,
+                        UPDATED_AT=excluded.UPDATED_AT
+                ''', (uid, nickname, total_dmg, f"{total_cv}", int(total_atk), weapon_name, timestamp))
 
 
-# Run the leaderboard calculation
 if __name__ == "__main__":
     leaderboard = LeaderBoard()
     leaderboard.lb()
